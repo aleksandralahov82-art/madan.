@@ -36,10 +36,16 @@ jobs:
       - name: Disable release lint check
         run: |
           python3 -c '
-          p = "android/app/build.gradle"
-          txt = open(p, "r", encoding="utf-8").read()
-          block = "\nandroid {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }\n}\n"
-          open(p, "w", encoding="utf-8").write(txt + block)
+          import os
+          for candidate in ["android/app/build.gradle.kts", "android/app/build.gradle"]:
+              if os.path.exists(candidate):
+                  txt = open(candidate, "r", encoding="utf-8").read()
+                  block = "\nandroid {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }\n}\n"
+                  open(candidate, "w", encoding="utf-8").write(txt + block)
+                  print("Updated:", candidate)
+                  break
+          else:
+              raise FileNotFoundError("Neither build.gradle.kts nor build.gradle found")
           '
 
       - name: Build release APK
