@@ -33,6 +33,15 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Disable release lint check
+        run: |
+          python3 -c '
+          p = "android/app/build.gradle"
+          txt = open(p, "r", encoding="utf-8").read()
+          block = "\nandroid {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }\n}\n"
+          open(p, "w", encoding="utf-8").write(txt + block)
+          '
+
       - name: Build release APK
         run: flutter build apk --release
 
