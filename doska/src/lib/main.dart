@@ -5,8 +5,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 // ВСТАВЬТЕ из Supabase: Project Settings -> API
-const supabaseUrl = 'ВСТАВЬТЕ_PROJECT_URL';
-const supabaseKey = 'ВСТАВЬТЕ_ANON_KEY';
+const supabaseUrl = 'https://uzdafaczdhagboowuqas.supabase.co';
+const supabaseKey = 'sb_publishable_o_GIeF178TGSBZaUlH_22g_vLn0badN';
+
 
 const categories = ['Транспорт', 'Недвижимость', 'Электроника', 'Одежда', 'Дом и сад', 'Услуги', 'Детям', 'Другое'];
 
