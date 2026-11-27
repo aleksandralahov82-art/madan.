@@ -8,8 +8,6 @@ import 'package:url_launcher/url_launcher.dart';
 const supabaseUrl = 'https://ulzdafxczbaqhoowupxs.supabase.co';
 const supabaseKey = 'sb_publishable_o_GIeF178TGSBZaUlH_22g_vLn0badN';
 
-
-
 const categories = ['Транспорт', 'Недвижимость', 'Электроника', 'Одежда', 'Дом и сад', 'Услуги', 'Детям', 'Другое'];
 
 SupabaseClient get sb => Supabase.instance.client;
@@ -55,6 +53,45 @@ String? normPhone(String p) {
   return d.length >= 11 && d.length <= 15 ? d : null;
 }
 
+bool get loggedIn => sb.auth.currentSession != null;
+
+Future<bool> requireLogin(BuildContext c) async {
+  if (loggedIn) return true;
+  await Navigator.push(c, MaterialPageRoute(builder: (_) => const AuthPage()));
+  return loggedIn;
+}
+
+final favIds = ValueNotifier<Set<String>>({});
+
+Future<void> loadFavs() async {
+  if (!loggedIn) {
+    favIds.value = {};
+    return;
+  }
+  try {
+    final r = await sb.from('favorites').select('ad_id').eq('user_id', sb.auth.currentUser!.id);
+    favIds.value = {for (final x in r) x['ad_id'] as String};
+  } catch (_) {}
+}
+
+Future<void> toggleFav(BuildContext c, String adId) async {
+  if (!await requireLogin(c)) return;
+  final uid = sb.auth.currentUser!.id;
+  final s = {...favIds.value};
+  try {
+    if (s.contains(adId)) {
+      await sb.from('favorites').delete().eq('user_id', uid).eq('ad_id', adId);
+      s.remove(adId);
+    } else {
+      await sb.from('favorites').insert({'user_id': uid, 'ad_id': adId});
+      s.add(adId);
+    }
+    favIds.value = s;
+  } catch (e) {
+    if (c.mounted) toast(c, 'Ошибка: $e');
+  }
+}
+
 InputDecoration deco(String l) => InputDecoration(labelText: l, border: const OutlineInputBorder());
 
 Future<void> main() async {
@@ -86,7 +123,7 @@ class Gate extends StatelessWidget {
   @override
   Widget build(BuildContext c) => StreamBuilder<AuthState>(
         stream: sb.auth.onAuthStateChange,
-        builder: (_, __) => sb.auth.currentSession == null ? const AuthPage() : const Shell(),
+        builder: (_, __) => Shell(key: ValueKey(sb.auth.currentUser?.id ?? 'guest')),
       );
 }
 
@@ -115,6 +152,7 @@ class _AuthPageState extends State<AuthPage> {
       } else {
         await sb.auth.signInWithPassword(email: email, password: pass.text);
       }
+      if (mounted && Navigator.canPop(context)) Navigator.pop(context);
     } on AuthException catch (e) {
       if (mounted) toast(context, e.message);
     } catch (e) {
@@ -125,6 +163,7 @@ class _AuthPageState extends State<AuthPage> {
 
   @override
   Widget build(BuildContext c) => Scaffold(
+        appBar: Navigator.canPop(c) ? AppBar() : null,
         body: SafeArea(
           child: Center(
             child: SingleChildScrollView(
@@ -161,6 +200,7 @@ class Shell extends StatefulWidget {
 
 class _ShellState extends State<Shell> {
   Map<String, dynamic>? me;
+  bool loaded = false;
   int tab = 0;
 
   @override
@@ -170,14 +210,23 @@ class _ShellState extends State<Shell> {
   }
 
   Future<void> load() async {
-    final r = await sb.from('profiles').select().eq('id', sb.auth.currentUser!.id).single();
-    if (mounted) setState(() => me = r);
+    Map<String, dynamic>? r;
+    if (loggedIn) {
+      try {
+        r = await sb.from('profiles').select().eq('id', sb.auth.currentUser!.id).single();
+      } catch (_) {}
+      loadFavs();
+    }
+    if (mounted) setState(() {
+      me = r;
+      loaded = true;
+    });
   }
 
   @override
   Widget build(BuildContext c) {
-    if (me == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    if (me!['is_banned'] == true) {
+    if (!loaded) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (me != null && me!['is_banned'] == true) {
       return Scaffold(
         body: Center(
           child: Padding(
@@ -192,11 +241,12 @@ class _ShellState extends State<Shell> {
         ),
       );
     }
-    final admin = me!['role'] == 'admin';
+    final admin = me?['role'] == 'admin';
     final pages = <Widget>[
       FeedPage(admin: admin),
-      AddPage(onDone: () => setState(() => tab = 0)),
-      ProfilePage(me: me!, onChanged: load),
+      loggedIn ? FeedPage(admin: admin, fav: true) : const GuestPage(title: 'Избранное', text: 'Войдите, чтобы сохранять понравившиеся объявления'),
+      loggedIn ? AddPage(onDone: () => setState(() => tab = 0)) : const GuestPage(title: 'Подать объявление', text: 'Чтобы опубликовать объявление, войдите или зарегистрируйтесь'),
+      (loggedIn && me != null) ? ProfilePage(me: me!, onChanged: load) : const GuestPage(title: 'Профиль', text: 'Войдите или зарегистрируйтесь, чтобы пользоваться всеми возможностями MADAN', settings: true),
       if (admin) const AdminPage(),
     ];
     return Scaffold(
@@ -206,6 +256,7 @@ class _ShellState extends State<Shell> {
         onDestinationSelected: (i) => setState(() => tab = i),
         destinations: [
           const NavigationDestination(icon: Icon(Icons.home), label: 'Лента'),
+          const NavigationDestination(icon: Icon(Icons.favorite_border), label: 'Избранное'),
           const NavigationDestination(icon: Icon(Icons.add_circle_outline), label: 'Подать'),
           const NavigationDestination(icon: Icon(Icons.person), label: 'Профиль'),
           if (admin) const NavigationDestination(icon: Icon(Icons.shield), label: 'Админ'),
@@ -217,8 +268,8 @@ class _ShellState extends State<Shell> {
 
 // ---------- Лента ----------
 class FeedPage extends StatefulWidget {
-  final bool admin, mine;
-  const FeedPage({super.key, required this.admin, this.mine = false});
+  final bool admin, mine, fav;
+  const FeedPage({super.key, required this.admin, this.mine = false, this.fav = false});
   @override
   State<FeedPage> createState() => _FeedPageState();
 }
@@ -238,7 +289,9 @@ class _FeedPageState extends State<FeedPage> {
   Future<void> load() async {
     setState(() => loading = true);
     try {
-      var qb = sb.from('ads').select('*, profiles(name, phone)');
+      if (widget.fav && favIds.value.isEmpty) await loadFavs();
+      var qb = sb.from('ads').select(loggedIn ? '*, profiles(name, phone)' : '*, profiles(name)');
+      if (widget.fav) qb = qb.inFilter('id', favIds.value.toList());
       if (widget.mine) qb = qb.eq('user_id', sb.auth.currentUser!.id);
       if (cat != null) qb = qb.eq('category', cat!);
       if (q.isNotEmpty) qb = qb.ilike('title', '%$q%');
@@ -262,9 +315,29 @@ class _FeedPageState extends State<FeedPage> {
           clipBehavior: Clip.antiAlias,
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Expanded(
-              child: a['image_url'] != null
-                  ? Image.network(a['image_url'], fit: BoxFit.cover, width: double.infinity)
-                  : const Center(child: Icon(Icons.image, size: 48, color: Colors.grey)),
+              child: Stack(fit: StackFit.expand, children: [
+                a['image_url'] != null
+                    ? Image.network(a['image_url'], fit: BoxFit.cover, width: double.infinity)
+                    : const Center(child: Icon(Icons.image, size: 48, color: Colors.grey)),
+                Positioned(
+                  right: 6,
+                  top: 6,
+                  child: ValueListenableBuilder<Set<String>>(
+                    valueListenable: favIds,
+                    builder: (ctx, f, _) {
+                      final on = f.contains(a['id']);
+                      return InkWell(
+                        onTap: () => toggleFav(ctx, a['id'] as String),
+                        child: CircleAvatar(
+                          radius: 16,
+                          backgroundColor: Colors.white,
+                          child: Icon(on ? Icons.favorite : Icons.favorite_border, size: 18, color: on ? Colors.red : Colors.grey.shade700),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ]),
             ),
             Padding(
               padding: const EdgeInsets.all(8),
@@ -280,9 +353,9 @@ class _FeedPageState extends State<FeedPage> {
 
   @override
   Widget build(BuildContext c) => Scaffold(
-        appBar: AppBar(title: Text(widget.mine ? 'Мои объявления' : 'MADAN')),
+        appBar: AppBar(title: Text(widget.fav ? 'Избранное' : widget.mine ? 'Мои объявления' : 'MADAN')),
         body: Column(children: [
-          if (!widget.mine)
+          if (!widget.mine && !widget.fav)
             Padding(
               padding: const EdgeInsets.all(12),
               child: Row(children: [
@@ -339,7 +412,7 @@ class AdPage extends StatelessWidget {
   @override
   Widget build(BuildContext c) {
     final seller = ad['profiles'] as Map<String, dynamic>?;
-    final own = ad['user_id'] == sb.auth.currentUser!.id;
+    final own = ad['user_id'] == sb.auth.currentUser?.id;
     return Scaffold(
       appBar: AppBar(),
       body: ListView(children: [
@@ -358,8 +431,24 @@ class AdPage extends StatelessWidget {
               contentPadding: EdgeInsets.zero,
               leading: const CircleAvatar(child: Icon(Icons.person)),
               title: Text(seller?['name'] ?? 'Продавец'),
-              subtitle: SelectableText(seller?['phone'] ?? 'Телефон не указан'),
+              subtitle: SelectableText(loggedIn ? (seller?['phone'] ?? 'Телефон не указан') : 'Войдите, чтобы увидеть контакт'),
             ),
+            ValueListenableBuilder<Set<String>>(
+              valueListenable: favIds,
+              builder: (ctx, f, _) {
+                final on = f.contains(ad['id']);
+                return OutlinedButton.icon(
+                  onPressed: () => toggleFav(ctx, ad['id'] as String),
+                  icon: Icon(on ? Icons.favorite : Icons.favorite_border, color: on ? Colors.red : null),
+                  label: Text(on ? 'В избранном' : 'В избранное'),
+                );
+              },
+            ),
+            const SizedBox(height: 8),
+            if (!loggedIn) ...[
+              FilledButton(onPressed: () => requireLogin(c), child: const Text('Войти, чтобы позвонить')),
+              const SizedBox(height: 8),
+            ],
             if ((seller?['phone'] ?? '').toString().isNotEmpty) ...[
               FilledButton.icon(
                 style: FilledButton.styleFrom(backgroundColor: kGreen),
@@ -609,6 +698,10 @@ class SettingsPage extends StatelessWidget {
   }
 
   Future<void> deleteAccount(BuildContext c) async {
+    if (!loggedIn) {
+      toast(c, 'Вы не вошли в аккаунт');
+      return;
+    }
     final ok = await showDialog<bool>(
       context: c,
       builder: (d) => AlertDialog(
@@ -662,6 +755,41 @@ class SettingsPage extends StatelessWidget {
               onTap: () => deleteAccount(c),
             ),
           ]),
+        ),
+      );
+}
+
+// ---------- Заглушка для гостей ----------
+class GuestPage extends StatelessWidget {
+  final String title, text;
+  final bool settings;
+  const GuestPage({super.key, required this.title, required this.text, this.settings = false});
+
+  @override
+  Widget build(BuildContext c) => Scaffold(
+        appBar: AppBar(title: Text(title)),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.lock_outline, size: 56, color: kBlue),
+              const SizedBox(height: 14),
+              Text(text, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => Navigator.push(c, MaterialPageRoute(builder: (_) => const AuthPage())),
+                  child: const Text('Войти или зарегистрироваться'),
+                ),
+              ),
+              if (settings)
+                TextButton(
+                  onPressed: () => Navigator.push(c, MaterialPageRoute(builder: (_) => const SettingsPage())),
+                  child: const Text('Настройки'),
+                ),
+            ]),
+          ),
         ),
       );
 }
