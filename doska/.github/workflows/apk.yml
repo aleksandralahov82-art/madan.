@@ -27,6 +27,14 @@ jobs:
         with:
           channel: stable
 
+      - name: Ensure INTERNET permission in AndroidManifest
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ] && ! grep -q "android.permission.INTERNET" "$MANIFEST"; then
+            sed -i 's/<manifest/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android"/' "$MANIFEST"
+            sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET"\/>' "$MANIFEST"
+          fi
+
       - name: Install dependencies
         run: flutter pub get
 
